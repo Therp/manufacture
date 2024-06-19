@@ -26,14 +26,12 @@ class MrpProduction(models.Model):
         for production in self:
             if not production.update_expiration_date:
                 continue
-            expiration_set = (
-                production.lot_producing_id.product_id.product_tmpl_id.use_expiration_date
-            )
+            if not production.date_planned_start:
+                continue
+            expiration_set = production.lot_producing_id.product_id.use_expiration_date
             if not expiration_set:
                 continue
-            expiration_time = (
-                production.lot_producing_id.product_id.product_tmpl_id.expiration_time
-            )
+            expiration_time = production.lot_producing_id.product_id.expiration_time
             production.lot_producing_id.expiration_date = (
                 production.date_planned_start + datetime.timedelta(days=expiration_time)
             )
