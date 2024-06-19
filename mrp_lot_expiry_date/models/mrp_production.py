@@ -9,7 +9,7 @@ class MrpProduction(models.Model):
     _inherit = "mrp.production"
 
     update_expiration_date = fields.Boolean(
-        string="Lot Expiration Date on Scheduled Date",
+        string="Update Expiry Date",
         help="Updates expiration date of lot based on planned date",
         default=True,
     )
@@ -37,4 +37,5 @@ class MrpProduction(models.Model):
             production.lot_producing_id.expiration_date = (
                 production.date_planned_start + datetime.timedelta(days=expiration_time)
             )
+            production.update_expiration_date = False
         return res
