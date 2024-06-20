@@ -8,10 +8,16 @@ from odoo import fields, models
 class MrpProduction(models.Model):
     _inherit = "mrp.production"
 
+    def _get_default_update_expiration_date(self):
+        """If lot exists, set this to false. True, otherwise"""
+        if self.lot_producing_id:
+            return False
+        return True
+
     update_expiration_date = fields.Boolean(
         string="Update Expiry Date",
         help="Updates expiration date of lot based on planned date",
-        default=True,
+        default=_get_default_update_expiration_date,
     )
     lot_producing_id_expiration_date = fields.Datetime(
         related="lot_producing_id.expiration_date",
