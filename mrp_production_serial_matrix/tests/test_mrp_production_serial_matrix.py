@@ -4,6 +4,15 @@
 from odoo.exceptions import UserError
 from odoo.tests import Form
 from odoo.tests.common import SavepointCase
+from odoo.tools.float_utils import float_is_zero
+
+from ..wizards.mrp_production_serial_matrix import MrpProductionSerialMatrix
+from odoo.addons.mrp.models.mrp_production import MrpProduction
+
+import logging
+import mock
+
+_logger = logging.getLogger(__name__)
 
 
 class TestMrpProductionSerialMatrix(SavepointCase):
@@ -284,3 +293,42 @@ class TestMrpProductionSerialMatrix(SavepointCase):
         mo_3 = mos.filtered(lambda mo: not mo.lot_producing_id)
         self.assertEqual(mo_3.state, "confirmed")
         self.assertEqual(mo_3.product_qty, 1.0)
+
+    def test_00_process_mo_partially(self):
+        self.env["ir.config_parameter"].set_param(
+            "mrp_production_serial_matrix.mrp_serial_matrix_allow_exceptions",
+            True
+        )
+        mo = self._create_mo(4)
+        serial1 = self._create_serial_number(self.final_product, "ABC101")
+        serial2 = self._create_serial_number(self.final_product, "ABC102")
+        serial3 = self._create_serial_number(self.final_product, "ABC103")
+        serial4 = self._create_serial_number(self.final_product, "ABC104")
+
+        original_method = MrpProductionSerialMatrix._button_validate_lot
+        def button_validate_lot_side_effect(*args, **kwargs):
+            this = args[0]
+            lot = args[3]
+            if lot.id == serial3.id:
+                return False
+            return mock.DEFAULT
+
+        with mock.patch.object(
+            MrpProductionSerialMatrix,
+            '_button_validate_lot',
+            autospec=True,
+            side_effect=button_validate_lot_side_effect,
+            wraps=MrpProductionSerialMatrix,
+        ) as mock_method:
+            wizard = self.env["mrp.production.serial.matrix"].with_context(
+                active_id=mo.id, active_model="mrp.production"
+            ).create({
+                "production_id": mo.id,
+                "finished_lot_ids": [
+                    (4, serial1.id),
+                    (4, serial2.id),
+                    (4, serial3.id),
+                    (4, serial4.id),
+                ]
+            })
+            wizard.button_validate()
