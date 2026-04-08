@@ -2,10 +2,13 @@
 # License AGPL-3 - See http://www.gnu.org/licenses/agpl-3.0.html
 
 import logging
+import unittest
 
 from odoo.exceptions import UserError
 from odoo.tests import Form
 from odoo.tests.common import SavepointCase
+
+from ..wizards.mrp_production_serial_matrix import MrpProductionSerialMatrix
 
 _logger = logging.getLogger(__name__)
 
@@ -345,3 +348,51 @@ class TestMrpProductionSerialMatrix(SavepointCase):
         self.assertEqual(mo_3.state, "done")
         mo_4 = mos.filtered(lambda mo: mo.lot_producing_id == serial4)
         self.assertEqual(mo_4.state, "done")
+
+    def test_03_process_matrix_partially(self):  # , fake_single_mo):
+        """Simulate the case of one MO in the batch failing to confirm.
+        In this case what should happen is that the process is stopped,
+        and only the MO's that were successful so far, remain confirmed.
+        The user should solve the problem and then be able to resume.
+        """
+        self.env["ir.config_parameter"].set_param(
+            "mrp_production_serial_matrix.mrp_serial_matrix_allow_exceptions", True
+        )
+        product = self.final_product_simple
+        production_1 = self._create_mo(product, 4.0)
+        self.assertEqual(production_1.state, "confirmed")
+        serial1 = self._create_serial_number(product, "ABC201", qty=0)
+        serial2 = self._create_serial_number(product, "ABC202", qty=0)
+        serial3 = self._create_serial_number(product, "ABC203", qty=0)
+        serial4 = self._create_serial_number(product, "ABC204", qty=0)
+
+        wizard = self.wiz_obj.with_context(
+            active_id=production_1.id, active_model="mrp.production"
+        ).create({})
+        lots = serial1 + serial2 + serial3 + serial4
+        wizard.finished_lot_ids = lots
+
+        # Pretend to fail at the third serial
+        def fail_decorator(method_to_decorate):
+            def wrapper(self, *args, **kwargs):
+                if args[1] == serial3:
+                    raise Exception()
+                return method_to_decorate(self, *args, **kwargs)
+
+            return wrapper
+
+        mocked = fail_decorator(MrpProductionSerialMatrix._validate_single_mo)
+        with unittest.mock.patch.object(
+            MrpProductionSerialMatrix, "_validate_single_mo", mocked
+        ):
+            res = wizard.button_validate()
+
+        mos = production_1.procurement_group_id.mrp_production_ids
+        self.assertEqual(len(mos), 3)
+        mo_1 = mos.filtered(lambda mo: mo.lot_producing_id == serial1)
+        self.assertEqual(mo_1.state, "done")
+        mo_2 = mos.filtered(lambda mo: mo.lot_producing_id == serial2)
+        self.assertEqual(mo_2.state, "done")
+        mo_3 = mos.filtered(lambda mo: not mo.lot_producing_id)
+        self.assertEqual(mo_3.product_qty, 2.0)
+        self.assertEqual(res["res_id"], mo_3.id)

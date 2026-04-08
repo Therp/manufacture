@@ -1,9 +1,14 @@
 # Copyright 2021 ForgeFlow S.L. (https://www.forgeflow.com)
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl.html).
 
+import logging
+import threading
+
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError, ValidationError
 from odoo.tools.float_utils import float_compare, float_is_zero
+
+_logger = logging.getLogger(__name__)
 
 
 class MrpProductionSerialMatrix(models.TransientModel):
@@ -214,7 +219,7 @@ class MrpProductionSerialMatrix(models.TransientModel):
             rec.line_ids = False
             rec.write({"line_ids": [(0, 0, x) for x in matrix_lines]})
 
-    def validate_single_mo(self, current_mo, fp_lot):
+    def _validate_single_mo(self, current_mo, fp_lot):
         """Validates a single MO from the batch, using the lot"""
         # Apply selected lots in matrix and set the qty producing
         current_mo.lot_producing_id = fp_lot
@@ -271,10 +276,36 @@ class MrpProductionSerialMatrix(models.TransientModel):
                 _("Some issues has been detected in your selection: %s")
                 % self.lot_selection_warning_msg
             )
+        exceptions_allowed = self.env["ir.config_parameter"].get_param(
+            "mrp_production_serial_matrix.mrp_serial_matrix_allow_exceptions"
+        )
+        test_mode = getattr(threading.currentThread(), "testing", False)
         mos = self.env["mrp.production"]
         current_mo = self.production_id
         for fp_lot in self.finished_lot_ids:
-            backorder_ids = self.validate_single_mo(current_mo, fp_lot)
+            try:
+                backorder_ids = self._validate_single_mo(current_mo, fp_lot)
+            except Exception as e:
+                if not exceptions_allowed:
+                    raise
+                # For a unit test, don't roll back, to simulate commits
+                # being done up until now.
+                if not test_mode:
+                    self.env.cr.rollback()
+                # Post the error on the current MO and show it
+                message = _(
+                    "Not all orders were produced because an exception occurred: "
+                ) + str(e)
+                current_mo.message_post(body=message)
+                # Even if exception is allowed, still stop the loop
+                return {
+                    "res_id": current_mo.id,
+                    "name": _("Manufacturing Order"),
+                    "view_mode": "form",
+                    "res_model": "mrp.production",
+                    "type": "ir.actions.act_window",
+                }
+
             current_mo = backorder_ids[0] if backorder_ids else False
             # Stop when there are no backorders anymore
             if not current_mo:
