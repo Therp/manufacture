@@ -39,6 +39,13 @@ class TestMrpProductionSerialMatrix(SavepointCase):
                 "tracking": "serial",
             }
         )
+        cls.final_product_2 = cls.product_obj.create(
+            {
+                "name": "Finished Product tracked by Serial Numbers (simple version)",
+                "type": "product",
+                "tracking": "serial",
+            }
+        )
         cls.component_1_serial = cls.product_obj.create(
             {
                 "name": "Component 1 tracked by Serial Numbers",
@@ -127,6 +134,21 @@ class TestMrpProductionSerialMatrix(SavepointCase):
                 "product_qty": 1.0,
             }
         )
+        # BoM 2 (simple BoM, only no tracking products)
+        cls.bom_2 = cls.bom_obj.create(
+            {
+                "product_tmpl_id": cls.final_product_2.product_tmpl_id.id,
+                "product_id": cls.final_product_2.id,
+                "product_qty": 1.0,
+            }
+        )
+        cls.bom_line_obj.create(
+            {
+                "bom_id": cls.bom_2.id,
+                "product_id": cls.component_4_no_track.id,
+                "product_qty": 4.0,
+            }
+        )
 
     @classmethod
     def _create_serial_number(cls, product, name, qty=1.0):
@@ -149,12 +171,12 @@ class TestMrpProductionSerialMatrix(SavepointCase):
         return lot
 
     @classmethod
-    def _create_mo(cls, qty):
+    def _create_mo(cls, product, qty):
         production_form = Form(cls.mo_obj)
-        production_form.product_id = cls.final_product
-        production_form.bom_id = cls.bom_1
+        production_form.product_id = product
+        production_form.bom_id = product.bom_ids[0]
         production_form.product_qty = qty
-        production_form.product_uom_id = cls.final_product.uom_id
+        production_form.product_uom_id = product.uom_id
         production_1 = production_form.save()
         production_1.action_confirm()
         production_1.action_assign()
@@ -176,7 +198,7 @@ class TestMrpProductionSerialMatrix(SavepointCase):
         - 1 tracked by lots.
         - 1 untracked.
         """
-        production_1 = self._create_mo(3.0)
+        production_1 = self._create_mo(self.final_product, 3.0)
         self.assertEqual(production_1.state, "confirmed")
         # Start matrix:
         wizard_form = Form(
@@ -294,41 +316,51 @@ class TestMrpProductionSerialMatrix(SavepointCase):
         self.assertEqual(mo_3.state, "confirmed")
         self.assertEqual(mo_3.product_qty, 1.0)
 
-    def test_00_process_mo_partially(self):
+    def test_02_process_matrix_partially(self):
+        """Simulate the case of one MO in the batch failing to confirm.
+        In this case what should happen is that the process is stopped,
+        and only the MO's that were successful so far, remain confirmed.
+        The user should solve the problem and then be able to resume.
+        """
         self.env["ir.config_parameter"].set_param(
             "mrp_production_serial_matrix.mrp_serial_matrix_allow_exceptions",
             True
         )
-        mo = self._create_mo(4)
-        serial1 = self._create_serial_number(self.final_product, "ABC101")
-        serial2 = self._create_serial_number(self.final_product, "ABC102")
-        serial3 = self._create_serial_number(self.final_product, "ABC103")
-        serial4 = self._create_serial_number(self.final_product, "ABC104")
+        production_1 = self._create_mo(self.final_product_2, 4.0)
+        self.assertEqual(production_1.state, "confirmed")
+        serial1 = self._create_serial_number(self.final_product_2, "ABC201")
+        serial2 = self._create_serial_number(self.final_product_2, "ABC202")
+        serial3 = self._create_serial_number(self.final_product_2, "ABC203")
+        serial4 = self._create_serial_number(self.final_product_2, "ABC204")
 
-        original_method = MrpProductionSerialMatrix._button_validate_lot
-        def button_validate_lot_side_effect(*args, **kwargs):
-            this = args[0]
-            lot = args[3]
-            if lot.id == serial3.id:
-                return False
-            return mock.DEFAULT
+        #original_method = MrpProductionSerialMatrix._button_validate_lot
+        #def button_validate_lot_side_effect(*args, **kwargs):
+        #    this = args[0]
+        #    lot = args[3]
+        #    if lot.id == serial3.id:
+        #        return False
+        #    return mock.DEFAULT
 
-        with mock.patch.object(
-            MrpProductionSerialMatrix,
-            '_button_validate_lot',
-            autospec=True,
-            side_effect=button_validate_lot_side_effect,
-            wraps=MrpProductionSerialMatrix,
-        ) as mock_method:
-            wizard = self.env["mrp.production.serial.matrix"].with_context(
-                active_id=mo.id, active_model="mrp.production"
-            ).create({
-                "production_id": mo.id,
-                "finished_lot_ids": [
-                    (4, serial1.id),
-                    (4, serial2.id),
-                    (4, serial3.id),
-                    (4, serial4.id),
-                ]
-            })
+        #with mock.patch.object(
+        #    MrpProductionSerialMatrix,
+        #    '_button_validate_lot',
+        #    autospec=True,
+        #    side_effect=button_validate_lot_side_effect,
+        #    wraps=MrpProductionSerialMatrix,
+        #) as mock_method:
+        if True:
+            wizard = self.wiz_obj.with_context(
+                active_id=production_1.id, active_model="mrp.production"
+            ).create({})
+            wizard.finished_lot_ids = serial1 + serial2 + serial3 + serial4
             wizard.button_validate()
+
+        # Things should have failed after the second MO.
+        # So all MO's up until and including the second one, should be processed.
+        mos = production_1.procurement_group_id.mrp_production_ids
+        self.assertEqual(len(mos), 4)
+        mo_1 = mos.filtered(lambda mo: mo.lot_producing_id == serial1)
+        self.assertEqual(mo_1.state, "done")
+        mo_2 = mos.filtered(lambda mo: mo.lot_producing_id == serial2)
+        self.assertEqual(mo_2.state, "done")
+

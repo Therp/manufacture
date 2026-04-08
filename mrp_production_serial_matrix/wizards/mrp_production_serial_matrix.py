@@ -218,7 +218,7 @@ class MrpProductionSerialMatrix(models.TransientModel):
             rec.line_ids = False
             rec.write({"line_ids": [(0, 0, x) for x in matrix_lines]})
 
-    def _button_validate_lot(self, mos, current_mo, lot):
+    def _validate_single_lot(self, current_mo, lot):
         backorder_ids = False
 
         # Apply selected lots in matrix and set the qty producing
@@ -248,8 +248,8 @@ class MrpProductionSerialMatrix(models.TransientModel):
                     self._consume_selected_lots(move, matrix_lines)
 
         # Complete MO and create backorder if needed.
-        mos += current_mo
         res = current_mo.button_mark_done()
+        print('HOO', res)
         backorder_wizard = self.env["mrp.production.backorder"]
         if isinstance(res, dict) and res.get("res_model") == backorder_wizard._name:
             # create backorders...
@@ -280,13 +280,17 @@ class MrpProductionSerialMatrix(models.TransientModel):
         exceptions_allowed = self.env["ir.config_parameter"].get_param(
             "mrp_production_serial_matrix.mrp_serial_matrix_allow_exceptions"
         )
+        test_mode = getattr(threading.currentThread(), "testing", False)
         backorder_ids = False
         current_mo = self.production_id
         finished_count = 0
         mos = self.env["mrp.production"]
-        try:
-            for fp_lot in self.finished_lot_ids:
-                backorder_ids = self._button_validate_lot(mos, current_mo, fp_lot)
+        for fp_lot in self.finished_lot_ids:
+            try:
+                print("HEY")
+                backorder_ids = self._validate_single_lot(current_mo, fp_lot)
+                print("HAAAA", backorder_ids)
+                mos += current_mo
                 if not backorder_ids:
                     break
                 current_mo = backorder_ids[0] if backorder_ids else False
@@ -295,31 +299,34 @@ class MrpProductionSerialMatrix(models.TransientModel):
                 # Commit changes in case processing any of the MO's fails
                 # somewhere, since it is ok to only produce a part of the
                 # quantity.
-                if exceptions_allowed and not getattr(
-                    threading.currentThread(), "testing", False
-                ):
+                if exceptions_allowed and not test_mode:
                     self.env.cr.commit()  # pylint: disable=invalid-commit
-        except Exception as e:
-            if getattr(threading.currentThread(), "testing", False):
-                raise e
-            if not exceptions_allowed or finished_count == 0:
-                raise e
-
-            self.env.cr.rollback()
-            _logger.error(e)
-            if backorder_ids:
-                message = _(
-                    "Not all orders where produced because an exception occurred: "
-                ) + str(e)
-                backorder_ids[0].message_post(body=message)
-                return {
-                    "res_id": backorder_ids[0].id,
-                    "name": _("Manufacturing Order"),
-                    "view_mode": "form",
-                    "res_model": "mrp.production",
-                    "type": "ir.actions.act_window",
-                }
-            raise e
+            except Exception as e:
+                if not exceptions_allowed:
+                    raise
+                raise
+                # Exception processing only triggering if setting switched on
+                _logger.error(e)
+                # For a unit test, don't roll back, to simulate commits
+                # being done up until now.
+                if not test_mode:
+                    self.env.cr.rollback()
+                # Post the error on the backorder
+                if backorder_ids:
+                    message = _(
+                        "Not all orders were produced because an exception occurred: "
+                    ) + str(e)
+                    backorder_ids[0].message_post(body=message)
+                # Even if exception is allowed, still stop the loop
+                if backorder_ids:
+                    return {
+                        "res_id": backorder_ids[0].id,
+                        "name": _("Manufacturing Order"),
+                        "view_mode": "form",
+                        "res_model": "mrp.production",
+                        "type": "ir.actions.act_window",
+                    }
+                break
 
         # TODO: not specified lots: auto create lots?
         if not mos:
