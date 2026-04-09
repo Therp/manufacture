@@ -396,3 +396,15 @@ class TestMrpProductionSerialMatrix(SavepointCase):
         mo_3 = mos.filtered(lambda mo: not mo.lot_producing_id)
         self.assertEqual(mo_3.product_qty, 2.0)
         self.assertEqual(res["res_id"], mo_3.id)
+
+        # Try again without failures, to produce the remaining products
+        wizard = self.wiz_obj.with_context(
+            active_id=mo_3.id, active_model="mrp.production"
+        ).create({})
+        lots = serial3 + serial4
+        wizard.finished_lot_ids = lots
+        wizard.button_validate()
+        mos = production_1.procurement_group_id.mrp_production_ids
+        self.assertEqual(len(mos), 4)
+        mos_done = mos.filtered(lambda mo: mo.state == "done" and mo.product_qty == 1.0)
+        self.assertEqual(len(mos_done), 4)
