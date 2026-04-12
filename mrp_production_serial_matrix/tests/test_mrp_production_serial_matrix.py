@@ -349,7 +349,30 @@ class TestMrpProductionSerialMatrix(SavepointCase):
         mo_4 = mos.filtered(lambda mo: mo.lot_producing_id == serial4)
         self.assertEqual(mo_4.state, "done")
 
-    def test_03_process_matrix_partially(self):  # , fake_single_mo):
+    @classmethod
+    def process_matrix_partially(cls, mo, lots, ctx=None):
+        default_ctx = ctx or {}
+        wizard = cls.wiz_obj.with_context(
+            **default_ctx, active_id=mo.id, active_model="mrp.production"
+        ).create({})
+        wizard.finished_lot_ids = lots
+
+        # Pretend to fail at the third serial
+        def fail_decorator(method_to_decorate):
+            def wrapper(cls, *args, **kwargs):
+                if args[1] == lots[2]:
+                    raise Exception()
+                return method_to_decorate(cls, *args, **kwargs)
+
+            return wrapper
+
+        mocked = fail_decorator(MrpProductionSerialMatrix._validate_single_mo)
+        with unittest.mock.patch.object(
+            MrpProductionSerialMatrix, "_validate_single_mo", mocked
+        ):
+            return wizard.button_validate()
+
+    def test_03_process_matrix_partially(self):
         """Simulate the case of one MO in the batch failing to confirm.
         In this case what should happen is that the process is stopped,
         and only the MO's that were successful so far, remain confirmed.
@@ -359,34 +382,14 @@ class TestMrpProductionSerialMatrix(SavepointCase):
             "mrp_production_serial_matrix.mrp_serial_matrix_allow_exceptions", True
         )
         product = self.final_product_simple
+        serial1 = self._create_serial_number(product, "ABC301", qty=0)
+        serial2 = self._create_serial_number(product, "ABC302", qty=0)
+        serial3 = self._create_serial_number(product, "ABC303", qty=0)
+        serial4 = self._create_serial_number(product, "ABC304", qty=0)
+        lots = serial1 + serial2 + serial3 + serial4
         production_1 = self._create_mo(product, 4.0)
         self.assertEqual(production_1.state, "confirmed")
-        serial1 = self._create_serial_number(product, "ABC201", qty=0)
-        serial2 = self._create_serial_number(product, "ABC202", qty=0)
-        serial3 = self._create_serial_number(product, "ABC203", qty=0)
-        serial4 = self._create_serial_number(product, "ABC204", qty=0)
-
-        wizard = self.wiz_obj.with_context(
-            active_id=production_1.id, active_model="mrp.production"
-        ).create({})
-        lots = serial1 + serial2 + serial3 + serial4
-        wizard.finished_lot_ids = lots
-
-        # Pretend to fail at the third serial
-        def fail_decorator(method_to_decorate):
-            def wrapper(self, *args, **kwargs):
-                if args[1] == serial3:
-                    raise Exception()
-                return method_to_decorate(self, *args, **kwargs)
-
-            return wrapper
-
-        mocked = fail_decorator(MrpProductionSerialMatrix._validate_single_mo)
-        with unittest.mock.patch.object(
-            MrpProductionSerialMatrix, "_validate_single_mo", mocked
-        ):
-            res = wizard.button_validate()
-
+        res = self.process_matrix_partially(production_1, lots)
         mos = production_1.procurement_group_id.mrp_production_ids
         self.assertEqual(len(mos), 3)
         mo_1 = mos.filtered(lambda mo: mo.lot_producing_id == serial1)
