@@ -285,6 +285,8 @@ class MrpProductionSerialMatrix(models.TransientModel):
         for fp_lot in self.finished_lot_ids:
             try:
                 backorder_ids = self._validate_single_mo(current_mo, fp_lot)
+                if exceptions_allowed and not test_mode:
+                    self.env.cr.commit()  # pylint: disable=invalid-commit
             except Exception as e:
                 if not exceptions_allowed:
                     raise
