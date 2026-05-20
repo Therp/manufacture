@@ -233,7 +233,7 @@ class MrpProductionSerialMatrix(models.TransientModel):
                 # the move.
                 continue
             if move.product_id.tracking in ["serial", "lot"]:
-                # We filter using the lot nane because the ORM sometimes
+                # We filter using the lot name because the ORM sometimes
                 # is not storing correctly the finished_lot_id in the lines
                 # after passing through the `_onchange_finished_lot_ids`
                 # method.
@@ -276,7 +276,7 @@ class MrpProductionSerialMatrix(models.TransientModel):
                 _("Some issues has been detected in your selection: %s")
                 % self.lot_selection_warning_msg
             )
-        exceptions_allowed = self.env["ir.config_parameter"].get_param(
+        exceptions_allowed = self.env["ir.config_parameter"].sudo().get_param(
             "mrp_production_serial_matrix.mrp_serial_matrix_allow_exceptions"
         )
         test_mode = getattr(threading.currentThread(), "testing", False)
